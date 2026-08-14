@@ -16,7 +16,7 @@
     { "name": "The Verge AI", "feed": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml" }
   ],
   "interests": "AI 트렌드와 산업 동향, AI가 경제·국제정세에 미치는 영향, 거시경제와 지정학 이슈, 새로 출시되거나 업데이트된 AI 툴과 기능(생산성·업무 자동화 관점), 기업/조직의 AI 도입 사례. 수신자는 AI 트렌드·국제정세 강연과 AI 활용 생산성 컨설팅을 하는 전문가이며, 강연과 컨설팅에 바로 인용할 수 있는 정보를 원한다.",
-  "model": "gemini-flash-latest",
+  "model": "gemini-3.5-flash",
   "lookback_days": 8,
   "max_deep_videos": 4,
   "max_items_stage1": 80
