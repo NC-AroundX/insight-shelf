@@ -1,0 +1,61 @@
+name: weekly-brief
+
+on:
+  schedule:
+    # UTC 월요일 00:00 = 한국시간 월요일 09:00
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      skip_email:
+        description: "이메일 발송 건너뛰기 (테스트용)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-brief
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 1) 소스 수집
+        run: python scripts/collect.py
+
+      - name: 2) Gemini 분석 및 브리핑 생성
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/analyze.py
+
+      - name: 3) 이메일 발송
+        if: ${{ inputs.skip_email != true }}
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: python scripts/send_email.py
+
+      - name: 4) 서가 사이트 빌드
+        run: python scripts/build_site.py
+
+      - name: 5) 아카이브 및 사이트 커밋
+        run: |
+          git config user.name "insight-shelf-bot"
+          git config user.email "actions@github.com"
+          git add archive/ docs/
+          git diff --cached --quiet || git commit -m "brief: 주간 브리핑"
+          git push
