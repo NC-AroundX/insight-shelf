@@ -1,0 +1,23 @@
+{
+  "youtube": [
+    { "name": "손에잡히는경제", "feed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCiYbaVEODktcsh09454Grow" },
+    { "name": "교양이를 부탁해", "feed": "https://www.youtube.com/feeds/videos.xml?channel_id=UChY8VUjXv0aA7RF9hDQ0ISg" },
+    { "name": "머니인사이드", "feed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCxfko2YOD6DODYRGzeOPhIQ" },
+    { "name": "지식인사이드", "feed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCA_hgsFzmynpv1zkvA5A7jA" },
+    { "name": "월드클로즈업 (14F)", "feed": "https://www.youtube.com/feeds/videos.xml?playlist_id=PL0NUN1E_oXswnrNTIXYEW1Fjsr5bgNkfh" },
+    { "name": "비디오머그", "feed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCMEbRpvuwTbXxGiyDb1mT8w" },
+    { "name": "크랩 KLAB", "feed": "https://www.youtube.com/feeds/videos.xml?channel_id=UCoxT1kQSLq564FwpK473w-g" }
+  ],
+  "articles": [
+    { "name": "OpenAI News (공식)", "feed": "https://openai.com/news/rss.xml" },
+    { "name": "Google DeepMind Blog (공식)", "feed": "https://deepmind.google/blog/feed/basic/" },
+    { "name": "Anthropic News (비공식 미러)", "feed": "https://rsshub.bestblogs.dev/anthropic/news", "optional": true },
+    { "name": "TechCrunch AI", "feed": "https://techcrunch.com/category/artificial-intelligence/feed/" },
+    { "name": "The Verge AI", "feed": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml" }
+  ],
+  "interests": "AI 트렌드와 산업 동향, AI가 경제·국제정세에 미치는 영향, 거시경제와 지정학 이슈, 새로 출시되거나 업데이트된 AI 툴과 기능(생산성·업무 자동화 관점), 기업/조직의 AI 도입 사례. 수신자는 AI 트렌드·국제정세 강연과 AI 활용 생산성 컨설팅을 하는 전문가이며, 강연과 컨설팅에 바로 인용할 수 있는 정보를 원한다.",
+  "model": "gemini-2.5-flash",
+  "lookback_days": 8,
+  "max_deep_videos": 4,
+  "max_items_stage1": 80
+}
