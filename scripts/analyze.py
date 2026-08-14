@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""2단계: Gemini API로 선별 → 영상 심층분석 → 주간 뉴스레터(markdown) 생성."""
+"""2단계: Gemini API로 선별 → 영상 심층분석 → 주간 뉴스레터(markdown) 생성.
+무료 티어 전용 설계: 영상은 경량 모델 + 분당 페이스 조절 + 시간 예산제."""
 import json
 import os
 import re
@@ -15,14 +16,17 @@ ARCHIVE = os.path.join(ROOT, "archive")
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 KST = timezone(timedelta(hours=9))
 
+VIDEO_TIME_BUDGET = 18 * 60   # 영상 분석 전체 상한 18분
+VIDEO_GAP = 70                # 영상 사이 대기 (분당 한도 리셋 주기)
+
 
 def load_json(path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def call_gemini(model, api_key, parts, generation_config=None, retries=4, timeout=300):
-    """Gemini 호출. 429/503(일시 혼잡)은 점점 길게 기다리며 재시도."""
+def call_gemini(model, api_key, parts, generation_config=None, retries=2, timeout=300):
+    """Gemini 호출. 429(분당 한도)는 70초, 503(혼잡)은 30초씩 기다리며 최대 2회 재시도."""
     url = f"{API_BASE}/{model}:generateContent"
     body = {"contents": [{"parts": parts}]}
     if generation_config:
@@ -32,8 +36,8 @@ def call_gemini(model, api_key, parts, generation_config=None, retries=4, timeou
         try:
             r = requests.post(url, params={"key": api_key}, json=body, timeout=timeout)
             if r.status_code in (429, 503):
-                wait = 30 * (attempt + 1)  # 30s, 60s, 90s...
-                print(f"  일시 혼잡({r.status_code}) → {wait}초 대기 후 재시도")
+                wait = 70 if r.status_code == 429 else 30
+                print(f"  한도/혼잡({r.status_code}) → {wait}초 대기 후 재시도")
                 time.sleep(wait)
                 last_err = RuntimeError(f"{r.status_code} busy")
                 continue
@@ -49,7 +53,7 @@ def call_gemini(model, api_key, parts, generation_config=None, retries=4, timeou
         except requests.exceptions.RequestException as exc:
             last_err = exc
             if attempt < retries:
-                time.sleep(15 * (attempt + 1))
+                time.sleep(15)
         except Exception as exc:
             last_err = exc
             if attempt < retries:
@@ -86,6 +90,7 @@ def stage1_select(cfg, api_key, items):
 
 
 def stage2_video(cfg, api_key, item):
+    video_model = cfg.get("video_model", "gemini-3.1-flash-lite")
     prompt = (
         "이 영상을 분석해 다음을 한국어로 작성하라:\n"
         "1) 핵심 주장 요약 (3~5문장)\n"
@@ -98,10 +103,10 @@ def stage2_video(cfg, api_key, item):
         {"text": prompt},
     ]
     try:
-        return call_gemini(cfg["model"], api_key, parts,
+        return call_gemini(video_model, api_key, parts,
                            generation_config={"mediaResolution": "MEDIA_RESOLUTION_LOW"})
     except Exception:
-        return call_gemini(cfg["model"], api_key, parts)
+        return call_gemini(video_model, api_key, parts)
 
 
 def stage3_newsletter(cfg, api_key, items, selection, video_notes, feed_status):
@@ -170,39 +175,42 @@ def main():
           f"심층 영상 {len(selection.get('deep_videos', []))}건")
 
     by_id = {it["id"]: it for it in items}
-    video_notes, consecutive_fail, aborted = [], 0, False
-    for vid in selection.get("deep_videos", [])[: cfg["max_deep_videos"]]:
+    video_notes, skipped = [], 0
+    video_start = time.time()
+    deep_list = selection.get("deep_videos", [])[: cfg["max_deep_videos"]]
+    for i, vid in enumerate(deep_list):
         item = by_id.get(vid)
         if not item or item["kind"] != "youtube":
             continue
+        if time.time() - video_start > VIDEO_TIME_BUDGET:
+            skipped = len(deep_list) - i
+            print(f"시간 예산 초과 → 남은 영상 {skipped}편 건너뜀 (브리핑은 계속 진행)")
+            break
         print(f"영상 분석: {item['title'][:50]}…")
         try:
             note = stage2_video(cfg, api_key, item)
             video_notes.append({"title": item["title"], "source": item["source"],
                                 "link": item["link"], "note": note})
-            consecutive_fail = 0
         except Exception as exc:
-            consecutive_fail += 1
-            print(f"  실패: {exc}", file=sys.stderr)
-            if consecutive_fail >= 2:
-                aborted = True
-                print("  연속 2회 실패 → 남은 영상 분석 중단 (근본 원인 확인 필요)", file=sys.stderr)
-                break
-        time.sleep(10)  # 영상 사이 간격을 두어 혼잡 회피
+            skipped += 1
+            print(f"  실패(건너뜀): {exc}", file=sys.stderr)
+        if i < len(deep_list) - 1:
+            print(f"  분당 한도 리셋 대기 {VIDEO_GAP}초…")
+            time.sleep(VIDEO_GAP)
 
     print("뉴스레터 작성…")
     body = stage3_newsletter(cfg, api_key, items, selection, video_notes, feed_status)
 
     dead = [s for s in feed_status if not s.get("ok")]
     footer_lines = ["", "---", ""]
-    if aborted:
-        footer_lines.append("> ⚠️ 영상 심층 분석이 연속 실패하여 일부만 포함되었습니다. "
-                            "유튜브 URL 처리 기능의 변경 여부 확인이 필요합니다.")
+    if skipped:
+        footer_lines.append(f"> ℹ️ 무료 사용량 한도로 이번 주 심층 영상 {skipped}편은 "
+                            f"제목·설명 기반으로만 반영되었습니다. (분석 성공 {len(video_notes)}편)")
     if dead:
         names = ", ".join(f"{s['name']}{'(선택적)' if s.get('optional') else ''}" for s in dead)
         footer_lines.append(f"> ⚠️ 이번 주 수집 실패 피드: {names}")
-    if not dead and not aborted:
-        footer_lines.append("> ✅ 모든 소스 정상 수집됨")
+    if not dead and not skipped:
+        footer_lines.append("> ✅ 모든 소스 정상 수집·분석됨")
     body += "\n".join(footer_lines)
 
     now = datetime.now(KST)
