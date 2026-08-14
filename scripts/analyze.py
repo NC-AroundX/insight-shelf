@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""2단계: Gemini API로 선별 → 영상 심층분석 → 주간 뉴스레터(markdown) 생성.
-
-토큰 비용 통제 설계:
-  - 1차: 제목/요약만으로 관련 항목 선별 (텍스트만, 저렴)
-  - 2차: 선별된 유튜브 영상만 최대 max_deep_videos개, 저해상도로 심층 분석
-  - 영상 분석이 2회 연속 실패하면 남은 영상 분석을 중단하고 브리핑에 명시 (무한 재시도 금지)
-
-출력:
-  archive/YYYY-Www.md        - 뉴스레터 본문 (markdown)
-  archive/YYYY-Www.meta.json - 메타데이터 (제목, 날짜, 하이라이트)
-"""
+"""2단계: Gemini API로 선별 → 영상 심층분석 → 주간 뉴스레터(markdown) 생성."""
 import json
 import os
 import re
@@ -31,8 +21,8 @@ def load_json(path):
         return json.load(f)
 
 
-def call_gemini(model, api_key, parts, generation_config=None, retries=2, timeout=300):
-    """Gemini generateContent 호출. 실패 시 최대 retries회 재시도 후 예외."""
+def call_gemini(model, api_key, parts, generation_config=None, retries=4, timeout=300):
+    """Gemini 호출. 429/503(일시 혼잡)은 점점 길게 기다리며 재시도."""
     url = f"{API_BASE}/{model}:generateContent"
     body = {"contents": [{"parts": parts}]}
     if generation_config:
@@ -41,9 +31,11 @@ def call_gemini(model, api_key, parts, generation_config=None, retries=2, timeou
     for attempt in range(retries + 1):
         try:
             r = requests.post(url, params={"key": api_key}, json=body, timeout=timeout)
-            if r.status_code == 429:  # rate limit → 대기 후 재시도
-                time.sleep(30 * (attempt + 1))
-                last_err = RuntimeError("429 rate limited")
+            if r.status_code in (429, 503):
+                wait = 30 * (attempt + 1)  # 30s, 60s, 90s...
+                print(f"  일시 혼잡({r.status_code}) → {wait}초 대기 후 재시도")
+                time.sleep(wait)
+                last_err = RuntimeError(f"{r.status_code} busy")
                 continue
             r.raise_for_status()
             data = r.json()
@@ -54,10 +46,14 @@ def call_gemini(model, api_key, parts, generation_config=None, retries=2, timeou
             if not text:
                 raise RuntimeError("빈 응답")
             return text
+        except requests.exceptions.RequestException as exc:
+            last_err = exc
+            if attempt < retries:
+                time.sleep(15 * (attempt + 1))
         except Exception as exc:
             last_err = exc
             if attempt < retries:
-                time.sleep(10 * (attempt + 1))
+                time.sleep(10)
     raise RuntimeError(f"Gemini 호출 실패: {last_err}")
 
 
@@ -67,7 +63,6 @@ def parse_json_response(text):
 
 
 def stage1_select(cfg, api_key, items):
-    """1차 선별: 어떤 항목을 브리핑에 넣고, 어떤 영상을 심층 분석할지."""
     listing = "\n".join(
         f"[{it['id']}] ({'영상' if it['kind'] == 'youtube' else '기사'} / {it['source']}) "
         f"{it['title']} — {it['summary'][:200]}"
@@ -91,7 +86,6 @@ def stage1_select(cfg, api_key, items):
 
 
 def stage2_video(cfg, api_key, item):
-    """영상 1건 심층 분석 (유튜브 URL 직접 입력, 저해상도)."""
     prompt = (
         "이 영상을 분석해 다음을 한국어로 작성하라:\n"
         "1) 핵심 주장 요약 (3~5문장)\n"
@@ -103,17 +97,14 @@ def stage2_video(cfg, api_key, item):
         {"fileData": {"fileUri": item["link"]}},
         {"text": prompt},
     ]
-    # 저해상도 우선 시도(토큰 1/3), 미지원 모델이면 일반 설정으로 1회 폴백
     try:
         return call_gemini(cfg["model"], api_key, parts,
-                           generation_config={"mediaResolution": "MEDIA_RESOLUTION_LOW"},
-                           retries=1)
+                           generation_config={"mediaResolution": "MEDIA_RESOLUTION_LOW"})
     except Exception:
-        return call_gemini(cfg["model"], api_key, parts, retries=1)
+        return call_gemini(cfg["model"], api_key, parts)
 
 
 def stage3_newsletter(cfg, api_key, items, selection, video_notes, feed_status):
-    """최종 뉴스레터 작성."""
     sel_ids = set(selection.get("selected", []))
     selected = [it for it in items if it["id"] in sel_ids]
     articles = [it for it in selected if it["kind"] == "article"]
@@ -154,7 +145,7 @@ def stage3_newsletter(cfg, api_key, items, selection, video_notes, feed_status):
 ## 심층 노트
 (심층 분석 노트를 다듬어 배치. 없으면 이 섹션 생략)
 
-## 강연 · 컨설팅에 쓸 한 줄
+## 핵심 인사이트 종합요약
 (이번 주 재료에서 뽑은, 강연 슬라이드나 컨설팅 대화에 바로 쓸 수 있는 인사이트 2~3개. 각 한 문장)
 
 규칙: 재료에 없는 사실을 만들어내지 마라. 확실하지 않은 것은 쓰지 마라. 링크는 재료에 있는 것만 사용하라. 제목(h1)은 쓰지 마라."""
@@ -178,7 +169,6 @@ def main():
     print(f"선별 결과: 포함 {len(selection.get('selected', []))}건, "
           f"심층 영상 {len(selection.get('deep_videos', []))}건")
 
-    # 2차: 영상 심층 분석 (연속 2회 실패 시 중단)
     by_id = {it["id"]: it for it in items}
     video_notes, consecutive_fail, aborted = [], 0, False
     for vid in selection.get("deep_videos", [])[: cfg["max_deep_videos"]]:
@@ -198,11 +188,11 @@ def main():
                 aborted = True
                 print("  연속 2회 실패 → 남은 영상 분석 중단 (근본 원인 확인 필요)", file=sys.stderr)
                 break
+        time.sleep(10)  # 영상 사이 간격을 두어 혼잡 회피
 
     print("뉴스레터 작성…")
     body = stage3_newsletter(cfg, api_key, items, selection, video_notes, feed_status)
 
-    # 시스템 상태 푸터 (자가진단 보고)
     dead = [s for s in feed_status if not s.get("ok")]
     footer_lines = ["", "---", ""]
     if aborted:
@@ -218,7 +208,7 @@ def main():
     now = datetime.now(KST)
     iso = now.isocalendar()
     slug = f"{iso.year}-W{iso.week:02d}"
-    title = f"{now.year}년 {now.month}월 {((now.day - 1) // 7) + 1}주차 인사이트 브리핑"
+    title = f"{now.year}년 {now.month}월 {((now.day - 1) // 7) + 1}주차 AI 인사이트 브리핑"
 
     os.makedirs(ARCHIVE, exist_ok=True)
     with open(os.path.join(ARCHIVE, f"{slug}.md"), "w", encoding="utf-8") as f:
