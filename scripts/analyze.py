@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """2단계: Gemini API로 선별 → 영상 심층분석 → 주간 뉴스레터(markdown) 생성.
-무료 티어 전용 설계: 영상은 경량 모델 + 분당 페이스 조절 + 시간 예산제."""
+무료 티어 전용 설계: 페이스 조절 + 시간 예산제 + 주/예비 모델 자동 교체(fallback)."""
 import json
 import os
 import re
@@ -16,7 +16,7 @@ ARCHIVE = os.path.join(ROOT, "archive")
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 KST = timezone(timedelta(hours=9))
 
-VIDEO_TIME_BUDGET = 18 * 60   # 영상 분석 전체 상한 18분
+VIDEO_TIME_BUDGET = 15 * 60   # 영상 분석 전체 상한 15분
 VIDEO_GAP = 70                # 영상 사이 대기 (분당 한도 리셋 주기)
 
 
@@ -25,8 +25,7 @@ def load_json(path):
         return json.load(f)
 
 
-def call_gemini(model, api_key, parts, generation_config=None, retries=2, timeout=300):
-    """Gemini 호출. 429(분당 한도)는 70초, 503(혼잡)은 30초씩 기다리며 최대 2회 재시도."""
+def _call_one_model(model, api_key, parts, generation_config=None, retries=2, timeout=300):
     url = f"{API_BASE}/{model}:generateContent"
     body = {"contents": [{"parts": parts}]}
     if generation_config:
@@ -37,7 +36,7 @@ def call_gemini(model, api_key, parts, generation_config=None, retries=2, timeou
             r = requests.post(url, params={"key": api_key}, json=body, timeout=timeout)
             if r.status_code in (429, 503):
                 wait = 70 if r.status_code == 429 else 30
-                print(f"  한도/혼잡({r.status_code}) → {wait}초 대기 후 재시도")
+                print(f"  [{model}] 한도/혼잡({r.status_code}) → {wait}초 대기 후 재시도")
                 time.sleep(wait)
                 last_err = RuntimeError(f"{r.status_code} busy")
                 continue
@@ -58,7 +57,20 @@ def call_gemini(model, api_key, parts, generation_config=None, retries=2, timeou
             last_err = exc
             if attempt < retries:
                 time.sleep(10)
-    raise RuntimeError(f"Gemini 호출 실패: {last_err}")
+    raise RuntimeError(f"{model} 실패: {last_err}")
+
+
+def call_gemini(cfg, api_key, parts, generation_config=None, retries=2):
+    """주 모델 실패 시 예비 모델로 자동 교체하여 호출."""
+    models = [cfg["model"], cfg.get("fallback_model", "gemini-3.1-flash-lite")]
+    last_err = None
+    for m in models:
+        try:
+            return _call_one_model(m, api_key, parts, generation_config, retries)
+        except Exception as exc:
+            last_err = exc
+            print(f"  {exc} → 예비 모델로 교체 시도" if m == models[0] else f"  {exc}")
+    raise RuntimeError(f"모든 모델 실패: {last_err}")
 
 
 def parse_json_response(text):
@@ -85,12 +97,11 @@ def stage1_select(cfg, api_key, items):
   "deep_videos": [심층 분석할 가치가 가장 높은 '영상' 항목 id 목록 (최대 {cfg['max_deep_videos']}개, 관심사 적합도 순)],
   "week_theme": "이번 주 콘텐츠를 관통하는 흐름 한 문장"
 }}"""
-    text = call_gemini(cfg["model"], api_key, [{"text": prompt}])
+    text = call_gemini(cfg, api_key, [{"text": prompt}])
     return parse_json_response(text)
 
 
 def stage2_video(cfg, api_key, item):
-    video_model = cfg.get("video_model", "gemini-3.1-flash-lite")
     prompt = (
         "이 영상을 분석해 다음을 한국어로 작성하라:\n"
         "1) 핵심 주장 요약 (3~5문장)\n"
@@ -102,11 +113,13 @@ def stage2_video(cfg, api_key, item):
         {"fileData": {"fileUri": item["link"]}},
         {"text": prompt},
     ]
+    # 영상은 처음부터 경량 모델 사용 (무료 한도 절약), 재시도 1회로 짧게
+    video_model = cfg.get("video_model", "gemini-3.1-flash-lite")
     try:
-        return call_gemini(video_model, api_key, parts,
-                           generation_config={"mediaResolution": "MEDIA_RESOLUTION_LOW"})
+        return _call_one_model(video_model, api_key, parts,
+                               {"mediaResolution": "MEDIA_RESOLUTION_LOW"}, retries=1)
     except Exception:
-        return call_gemini(video_model, api_key, parts)
+        return _call_one_model(video_model, api_key, parts, retries=1)
 
 
 def stage3_newsletter(cfg, api_key, items, selection, video_notes, feed_status):
@@ -154,7 +167,7 @@ def stage3_newsletter(cfg, api_key, items, selection, video_notes, feed_status):
 (이번 주 재료에서 뽑은, 강연 슬라이드나 컨설팅 대화에 바로 쓸 수 있는 인사이트 2~3개. 각 한 문장)
 
 규칙: 재료에 없는 사실을 만들어내지 마라. 확실하지 않은 것은 쓰지 마라. 링크는 재료에 있는 것만 사용하라. 제목(h1)은 쓰지 마라."""
-    return call_gemini(cfg["model"], api_key, [{"text": prompt}],
+    return call_gemini(cfg, api_key, [{"text": prompt}],
                        generation_config={"temperature": 0.4})
 
 
