@@ -40,7 +40,18 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python scripts/analyze.py
 
-      - name: 3) 이메일 발송
+      - name: 3) 서가 사이트 빌드
+        run: python scripts/build_site.py
+
+      - name: 4) 아카이브 및 사이트 커밋
+        run: |
+          git config user.name "insight-shelf-bot"
+          git config user.email "actions@github.com"
+          git add archive/ docs/
+          git diff --cached --quiet || git commit -m "brief: 주간 브리핑"
+          git push
+
+      - name: 5) 이메일 발송
         if: ${{ inputs.skip_email != true }}
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -48,14 +59,3 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
           SITE_URL: ${{ vars.SITE_URL }}
         run: python scripts/send_email.py
-
-      - name: 4) 서가 사이트 빌드
-        run: python scripts/build_site.py
-
-      - name: 5) 아카이브 및 사이트 커밋
-        run: |
-          git config user.name "insight-shelf-bot"
-          git config user.email "actions@github.com"
-          git add archive/ docs/
-          git diff --cached --quiet || git commit -m "brief: 주간 브리핑"
-          git push
