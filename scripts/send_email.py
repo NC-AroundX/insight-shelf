@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """3단계: 이번 주 브리핑을 '인사이트 서가' 디자인의 HTML 이메일로 발송한다.
 
+- 수신자: MAIL_TO에 쉼표로 여러 명 지정 가능, 전원 숨은참조(BCC) 처리
+- 브리핑 하단의 시스템 자가진단 문구(수집 실패 등)는 이메일에서 자동 제거
+  (서가 웹페이지에는 그대로 남아 운영자가 확인 가능)
+- 푸터에 AI 생성 자료 고지 문구 포함
+
 필요한 시크릿: SMTP_USER, SMTP_PASS, MAIL_TO
 선택: SMTP_HOST(기본 smtp.gmail.com), SMTP_PORT(기본 465), SITE_URL(서가 주소)
 """
@@ -31,6 +36,10 @@ SERIF = "'Noto Serif KR','Nanum Myeongjo',Batang,serif"
 SANS = ("-apple-system,'Apple SD Gothic Neo','Malgun Gothic',"
         "'Segoe UI',Roboto,sans-serif")
 
+AI_NOTICE = ("이 브리핑은 AI가 공개 콘텐츠를 자동 수집·요약해 생성한 자료로, "
+             "사실관계 오류나 원문과 다른 해석이 포함될 수 있습니다. "
+             "중요한 의사결정이나 인용 전에는 심사숙고해서 사용하시기 바랍니다.")
+
 
 def latest_brief():
     metas = sorted(glob.glob(os.path.join(ARCHIVE, "*.meta.json")))
@@ -42,6 +51,17 @@ def latest_brief():
     with open(os.path.join(ARCHIVE, f"{meta['slug']}.md"), encoding="utf-8") as f:
         body = f.read()
     return meta, body
+
+
+def strip_system_footer(body_md):
+    """브리핑 끝의 시스템 자가진단 블록(--- 이후의 > 안내문들)을 이메일용으로 제거."""
+    lines = body_md.rstrip().split("\n")
+    i = len(lines) - 1
+    while i >= 0 and (lines[i].strip() == "" or lines[i].lstrip().startswith(">")):
+        i -= 1
+    if i >= 0 and lines[i].strip() == "---":
+        i -= 1
+    return "\n".join(lines[: i + 1]).rstrip()
 
 
 def style_html(html_body):
@@ -113,6 +133,9 @@ def build_email_html(meta, body_md, site_url):
     <tr><td style="padding:18px 8px;text-align:center">
       <div style="font-family:{SANS};font-size:12px;color:{MUTED}">
         인사이트 서가 · 매주 월요일 아침 자동 발행</div>
+      <div style="font-family:{SANS};font-size:11px;line-height:1.7;color:{MUTED};
+                  margin-top:10px;max-width:520px;margin-left:auto;margin-right:auto">
+        {AI_NOTICE}</div>
     </td></tr>
   </table>
 </td></tr></table>
@@ -131,20 +154,24 @@ def main():
     site = os.environ.get("SITE_URL", "")
 
     meta, body_md = latest_brief()
+    body_md = strip_system_footer(body_md)  # 이메일에서는 자가진단 문구 제거
     html = build_email_html(meta, body_md, site)
+
+    recipients = [a.strip() for a in to.split(",") if a.strip()]
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[인사이트 브리핑] {meta['title']}"
     msg["From"] = user
-    msg["To"] = user
-    msg.attach(MIMEText(body_md, "plain", "utf-8"))
+    msg["To"] = user  # 표시상 받는사람은 발신자 본인 → 실제 수신자들은 숨은참조 처리
+    plain_footer = f"\n\n---\n{AI_NOTICE}"
+    msg.attach(MIMEText(body_md + plain_footer, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(host, port, context=ctx) as server:
         server.login(user, pw)
-        server.sendmail(user, [a.strip() for a in to.split(",")], msg.as_string())
-    print(f"발송 완료 → {to}")
+        server.sendmail(user, recipients, msg.as_string())
+    print(f"발송 완료 → {len(recipients)}명")
 
 
 if __name__ == "__main__":
