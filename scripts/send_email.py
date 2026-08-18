@@ -136,14 +136,14 @@ def main():
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[인사이트 브리핑] {meta['title']}"
     msg["From"] = user
-    msg["To"] = to
+    msg["To"] = user
     msg.attach(MIMEText(body_md, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(host, port, context=ctx) as server:
         server.login(user, pw)
-        server.sendmail(user, [to], msg.as_string())
+                server.sendmail(user, [a.strip() for a in to.split(",")], msg.as_string())
     print(f"발송 완료 → {to}")
 
 
