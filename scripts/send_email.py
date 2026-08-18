@@ -143,7 +143,7 @@ def main():
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(host, port, context=ctx) as server:
         server.login(user, pw)
-                server.sendmail(user, [a.strip() for a in to.split(",")], msg.as_string())
+        server.sendmail(user, [a.strip() for a in to.split(",")], msg.as_string())
     print(f"발송 완료 → {to}")
 
 
